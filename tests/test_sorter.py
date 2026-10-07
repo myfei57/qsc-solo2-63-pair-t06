@@ -30,9 +30,9 @@ def test_dispatch_refuses_an_uncommitted_reading(plant, flight):
 def test_dispatch_records_and_updates_the_bag(plant, flight):
     bag = check_in(plant, flight.id, 1)[0]
     plant.chutes.assign(flight.id, "T1-CHA")
-    record = plant.sorter.dispatch(plant.bag(bag.id), _committed(bag))
-    assert record.chute_id == "T1-CHA"
-    assert record.flight_id == flight.id
+    result = plant.sorter.dispatch(plant.bag(bag.id), _committed(bag))
+    assert result.record.chute_id == "T1-CHA"
+    assert result.record.flight_id == flight.id
     assert plant.bag(bag.id).state is BagState.SORTED
     assert plant.bag(bag.id).chute_id == "T1-CHA"
 

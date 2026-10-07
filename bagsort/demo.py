@@ -29,13 +29,21 @@ def run_demo(plant: "Plant", cycles: int = 6) -> dict[str, object]:
     chute = plant.namespace.chute_id("A")
     carousel = plant.namespace.carousel_id("CR1")
     plant.assign_chute(flight.id, chute)
+    batch = plant.arm_batch(flight.id, carousel=carousel, window_seconds=60)
     plant.clock.advance(5)
 
     checked_in = [plant.check_in(f"BAG{i:04d}", flight.id) for i in range(cycles)]
-    plant.clock.advance(30)
+    plant.clock.advance(20)  # t=25: still inside batch 1's window (closes at t=60)
     sorted_bags = [plant.push_bag(bag.id, chute) for bag in checked_in]
-    plant.clock.advance(120)
+    plant.clock.advance(40)  # t=65: one boundary has passed, the next window is batch 2
 
+    # A late allocation after the 60s countdown closes batch 1 (carousel
+    # handoff in the same commit point) and books this bag into batch 2.
+    late_bag = plant.check_in("LATE001", flight.id)
+    plant.push_bag(late_bag.id, chute)
+    late_item = plant.batches.item_for_bag(late_bag.id)
+    closed_batch = plant.batches.get(batch.id)
+    batch_check = plant.verify_batches()
     duplicate_retry = plant.retry_bag(checked_in[0].id)
     diverted = plant.divert_bag(checked_in[-1].id)
 
@@ -69,6 +77,10 @@ def run_demo(plant: "Plant", cycles: int = 6) -> dict[str, object]:
         "replayed_transfers": replayed,
         "load_records": loads,
         "flight_state": closed.state.value,
+        "first_batch_closed": closed_batch.state.value,
+        "first_batch_commit_seq": closed_batch.commit_seq,
+        "late_bag_batch": late_item.number,
+        "batch_history_ok": batch_check.ok,
         "audit_entries": plant.audit.count(),
         "audit_intact": plant.audit.verify(),
         "watermark": plant.store.watermark,
@@ -88,5 +100,8 @@ def invariants_hold(summary: dict[str, object]) -> bool:
         and summary["carousel_cleared"] >= 1
         and summary["load_records"] >= 1
         and summary["flight_state"] == "closed"
+        and summary["first_batch_closed"] == "closed"
+        and summary["late_bag_batch"] == 2
+        and summary["batch_history_ok"] is True
         and int(summary["watermark"]) > 0
     )

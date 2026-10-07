@@ -76,6 +76,9 @@ class Journal:
     def has_pending(self) -> bool:
         return bool(self._pending)
 
+    def pending_count(self) -> int:
+        return len(self._pending)
+
     def append(self, kind: str, payload: dict[str, Any], at: str = "") -> None:
         self._pending.append((kind, payload, at))
 

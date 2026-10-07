@@ -7,9 +7,14 @@ lets the CLI drive the same operations the HTTP API exposes.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from bagsort.audit.chain import AuditChain
+from bagsort.batch.attributor import BatchAttributor
+from bagsort.batch.history import HistoryVerification, verify_history
+from bagsort.batch.ledger import BatchLedger
+from bagsort.batch import policy
 from bagsort.belt.belt import Belt
 from bagsort.checkin.desk import Desk
 from bagsort.clock import Clock
@@ -68,6 +73,7 @@ class Plant:
     belt: Belt
     quota: QuotaBook
     audit: AuditChain
+    batches: BatchLedger
     report: PlantReport
 
     @property
@@ -98,13 +104,20 @@ class Plant:
         schedule = ScheduleBoard(store, clock)
         chutes = ChuteAssigner(store, clock)
         chute_history = AssignmentHistory(store)
-        sorter = Sorter(store, mapping, chutes, clock, VerdictTracker())
+        batches = BatchLedger(store, clock)
+        attributor = BatchAttributor(batches, handoff=None)
+        sorter = Sorter(
+            store, mapping, chutes, clock, VerdictTracker(), attributor=attributor
+        )
         injector = Injector(store, book, sorter, clock)
         quota = QuotaBook(store, clock)
         desk = Desk(store, reader, book, mapping, injector, quota, clock, handling_line())
         closer = FlightCloser(book)
         recheck = RecheckQueue(store, book, clock)
         belt = Belt(store, clock, IdFactory("cmd"))
+        # The handoff closes the carousel into load records inside the batch
+        # commit, and dispatch late allocations use the flight's carousel.
+        attributor.bind_handoff(belt)
 
         audit = AuditChain(store, clock, handling_line())
         audit_subscriber = _AuditSubscriber(audit)
@@ -116,12 +129,13 @@ class Plant:
             "flight.closed",
             "chute.assigned",
             "belt.switched",
+            "batch.closed",
             "bag.remapped",
         ):
             bus.subscribe(topic, audit_subscriber)
 
         report = PlantReport(
-            store, book, chutes, belt, quota, audit, namespace, handling_line()
+            store, book, chutes, belt, quota, audit, namespace, handling_line(), batches
         )
         return cls(
             store=store,
@@ -146,6 +160,7 @@ class Plant:
             belt=belt,
             quota=quota,
             audit=audit,
+            batches=batches,
             report=report,
         )
 
@@ -189,16 +204,57 @@ class Plant:
 
     def push_bag(self, bag_id: str, chute_id: str) -> SortRecord:
         bag = self.bag(bag_id)
-        record = self.injector.push(bag, chute_id)
-        self.bus.publish("bag.sorted", bag_id=bag.id, chute_id=record.chute_id)
-        return record
+        with self._boundary_commit() as announce:
+            result = self.injector.push(bag, chute_id)
+        self.bus.publish("bag.sorted", bag_id=bag.id, chute_id=result.chute_id)
+        announce()
+        return result
 
     def retry_bag(self, bag_id: str) -> bool:
         bag = self.bag(bag_id)
-        sorted_now = self.injector.retry(bag)
+        with self._boundary_commit() as announce:
+            sorted_now = self.injector.retry(bag)
         if sorted_now:
             self.bus.publish("bag.sorted", bag_id=bag.id, retry=True)
+        announce()
         return sorted_now
+
+    def _closed_batch_ids(self) -> set[str]:
+        from bagsort.model.enums import BatchState
+
+        return {
+            batch.id
+            for batch in self.store.state().batches.values()
+            if batch.state is BatchState.CLOSED
+        }
+
+    @contextmanager
+    def _boundary_commit(self):
+        """Capture batch boundaries an operation seals and flush them on exit.
+
+        Any dispatch can roll a due batch over, so every dispatch entry point
+        uses this: after the store commit it publishes one ``batch.closed``
+        event per newly sealed batch and persists the non-revertible commit
+        point. A dispatch that sealed nothing persists nothing extra.
+        """
+
+        closed_before = self._closed_batch_ids()
+        yield lambda: self._announce_newly_closed(closed_before)
+
+    def _announce_newly_closed(self, closed_before: set[str]) -> None:
+        for batch_id in sorted(self._closed_batch_ids() - closed_before):
+            self._announce_closed(batch_id)
+
+    def _announce_closed(self, batch_id: str) -> None:
+        batch = self.batches.get(batch_id)
+        self.bus.publish(
+            "batch.closed",
+            flight_id=batch.flight_id,
+            batch_id=batch.id,
+            number=batch.number,
+        )
+        # A boundary is a non-revertible commit point: flush it to disk.
+        self.store.persist()
 
     def divert_bag(self, bag_id: str) -> Bag:
         bag = self.bag(bag_id)
@@ -243,6 +299,78 @@ class Plant:
     def set_quota(self, flight_id: str, limit: int) -> int:
         return self.quota.set_limit(flight_id, limit)
 
+    # -- sorting batches ---------------------------------------------------
+
+    def arm_batch(
+        self,
+        flight_id: str,
+        carousel: str = "",
+        window_seconds: int = policy.DEFAULT_WINDOW_SECONDS,
+    ):
+        """Open (or idempotently return) the current sorting batch."""
+
+        batch = self.batches.arm(flight_id, carousel, window_seconds)
+        # First batch of a carousel: announce it so downstream sees the pointer.
+        if not self.belt.carousel() and batch.carousel:
+            self.belt.set(batch.carousel, batch.number)
+        return batch
+
+    def close_batch(self, batch_id: str):
+        """Close one due batch, hand the carousel over, and commit to disk."""
+
+        commit_before = self.batches.get(batch_id).commit_seq
+        batch = self.batches.close_batch(batch_id, self.belt)
+        if batch.commit_seq != commit_before:
+            self.bus.publish(
+                "batch.closed",
+                flight_id=batch.flight_id,
+                batch_id=batch.id,
+                number=batch.number,
+            )
+            self.store.persist()
+        return batch
+
+    def tick_batches(self) -> list:
+        """Close every batch whose countdown has elapsed; idempotent."""
+
+        before = self._closed_batch_ids()
+        closed = self.batches.tick(self.belt)
+        for batch in closed:
+            if batch.id not in before:
+                self.bus.publish(
+                    "batch.closed",
+                    flight_id=batch.flight_id,
+                    batch_id=batch.id,
+                    number=batch.number,
+                )
+        if closed:
+            self.store.persist()
+        return closed
+
+    def batch_history(self, flight_id: str | None = None) -> list:
+        if flight_id is None:
+            return self.batches.history()
+        return [
+            item
+            for item in self.batches.history()
+            if item.flight_id == flight_id
+        ]
+
+    def bag_batch(self, bag_id: str) -> dict[str, object] | None:
+        """Which sealed/open batch a bag was booked into, if any."""
+
+        item = self.batches.item_for_bag(bag_id)
+        if item is None:
+            return None
+        batch = self.batches.get(item.batch_id)
+        return {"item": item, "batch": batch}
+
+    def verify_batches(self) -> HistoryVerification:
+        return verify_history(self.store.state())
+
+    def batch_policy(self) -> dict[str, str]:
+        return policy.policy_description()
+
     def verify(self) -> bool:
         return self.audit.verify()
 
@@ -258,6 +386,7 @@ class _AuditSubscriber:
         "flight.closed": ("flight_close", "audit"),
         "chute.assigned": ("chute_assign", "chute"),
         "belt.switched": ("belt_switch", "belt"),
+        "batch.closed": ("batch_close", "belt"),
         "bag.remapped": ("remap", "checkin"),
     }
 

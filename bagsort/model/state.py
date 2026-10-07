@@ -13,14 +13,19 @@ from typing import Any
 from .entities import (
     AuditEntry,
     Bag,
+    BatchItem,
     ChuteAssignment,
     Flight,
     LoadRecord,
     Sequence,
+    SortBatch,
     SortRecord,
     TransferCommand,
 )
+from .entities import _clean
 from bagsort.errors import ValidationError
+
+from .enums import BatchState
 
 
 @dataclass
@@ -42,6 +47,11 @@ class State:
     belt_carousel: str = ""
     belt_batch: int = 0
     belt_on_carousel: list[str] = field(default_factory=list)
+    batches: dict[str, SortBatch] = field(default_factory=dict)
+    batch_items: list[BatchItem] = field(default_factory=list)
+    # Sealed close material per closed batch id; immutable evidence captured
+    # at the commit point (membership, boundary and carousel snapshot).
+    sealed_materials: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def copy(self) -> "State":
         return State(
@@ -60,6 +70,9 @@ class State:
             belt_carousel=self.belt_carousel,
             belt_batch=self.belt_batch,
             belt_on_carousel=list(self.belt_on_carousel),
+            batches=dict(self.batches),
+            batch_items=list(self.batch_items),
+            sealed_materials=dict(self.sealed_materials),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -82,6 +95,11 @@ class State:
                 "carousel": self.belt_carousel,
                 "batch": self.belt_batch,
                 "on_carousel": list(self.belt_on_carousel),
+            },
+            "batches": {key: value.as_dict() for key, value in sorted(self.batches.items())},
+            "batch_items": [item.as_dict() for item in self.batch_items],
+            "sealed_materials": {
+                key: _clean(value) for key, value in sorted(self.sealed_materials.items())
             },
         }
 
@@ -153,6 +171,31 @@ def apply_entry(state: State, kind: str, payload: dict[str, Any]) -> None:
         state.belt_on_carousel = []
         state.belt_carousel = str(payload.get("carousel", state.belt_carousel))
         state.belt_batch = int(payload.get("batch", state.belt_batch))
+    elif kind == "batch.open":
+        batch = SortBatch.from_dict(payload["batch"])
+        if batch.id in state.batches:
+            raise ValidationError(f"batch {batch.id!r} was already opened")
+        state.batches[batch.id] = batch
+    elif kind == "batch.close":
+        batch = SortBatch.from_dict(payload["batch"])
+        current = state.batches.get(batch.id)
+        if current is None:
+            raise ValidationError(f"batch {batch.id!r} was never opened")
+        if current.state is not BatchState.OPEN:
+            raise ValidationError(f"batch {batch.id!r} is already closed")
+        state.batches[batch.id] = batch
+        if "material" in payload:
+            state.sealed_materials[batch.id] = _clean(payload["material"])
+    elif kind == "batch.item":
+        item = BatchItem.from_dict(payload["item"])
+        batch = state.batches.get(item.batch_id)
+        if batch is None:
+            raise ValidationError(f"batch {item.batch_id!r} was never opened")
+        if batch.state is not BatchState.OPEN:
+            raise ValidationError(f"batch {item.batch_id!r} is closed and sealed")
+        if any(existing.bag_id == item.bag_id for existing in state.batch_items):
+            raise ValidationError(f"bag {item.bag_id!r} is already booked in a batch")
+        state.batch_items.append(item)
     else:  # pragma: no cover - guards against a typo in a new command kind
         raise ValidationError(f"unknown journal command {kind!r}")
 

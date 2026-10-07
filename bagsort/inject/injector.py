@@ -60,7 +60,7 @@ class Injector:
             epoch=bag.epoch,
             committed=True,
         )
-        return self._sorter.dispatch(bag, reading)
+        return self._sorter.dispatch(bag, reading).record
 
     def retry(self, bag: Bag) -> bool:
         """Re-drive a bag that may already have been sorted; returns True if it sorted."""

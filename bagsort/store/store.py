@@ -33,6 +33,11 @@ class Session:
             self._last_at = at
         self._store.journal.append(kind, payload, at or self._last_at)
 
+    def next_sequence(self) -> int:
+        """Sequence the next command recorded in this session will commit as."""
+
+        return self._store.watermark + self._store.journal.pending_count() + 1
+
 
 class Store:
     """Append-only command log with a materialised view and a commit watermark."""
@@ -87,6 +92,8 @@ class Store:
             "sort_records": len(state.sort_records),
             "transfer_commands": len(state.transfer_commands),
             "load_records": len(state.load_records),
+            "batches": len(state.batches),
+            "batch_items": len(state.batch_items),
             "audit": len(state.audit),
         }
 

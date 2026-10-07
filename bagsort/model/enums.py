@@ -41,3 +41,16 @@ class Verdict(str, Enum):
     FRESH = "fresh"
     REPLAYED = "replayed"
     ROLLED_OVER = "rolled_over"
+
+
+class BatchState(str, Enum):
+    """Lifecycle of one sorting batch.
+
+    A batch accepts chute allocations while ``OPEN``. Closing is the only
+    transition out and it is irreversible: the ledger rejects every further
+    item for a closed batch, so the boundary is a real commit point rather
+    than a flag someone can flip back.
+    """
+
+    OPEN = "open"
+    CLOSED = "closed"

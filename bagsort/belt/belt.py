@@ -4,9 +4,16 @@ Switching a batch must clear the carousel before the new batch is announced and
 must retire the previous batch's transfer commands. Doing either in the other
 order is how bags ride across batches and how a stale command re-delivers a bag
 to the carousel it already left.
+
+When a sorting batch closes, the batch ledger calls :meth:`Belt.stage_handoff`
+inside its own commit transaction: clear (load records), then announce. The
+load records are stamped from the sealed batch ledger membership, so the
+loader and the batch ledger can never disagree about a bag's batch.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from bagsort.clock import Clock
 from bagsort.errors import OrderingError
@@ -14,7 +21,75 @@ from bagsort.ids import IdFactory
 from bagsort.model.entities import Bag, LoadRecord, TransferCommand
 from bagsort.model.enums import BagState
 from bagsort.model.validate import validate_transfer
-from bagsort.store.store import Store
+from bagsort.store.store import Session, Store
+
+
+def _batch_for_bag(state: Any, bag_id: str, fallback_carousel: str, fallback_batch: int):
+    """Resolve a bag's sealed (carousel, batch) from the batch ledger.
+
+    Falls back to the carousel currently running for bags that were loaded
+    outside batch control (legacy flow), keeping that path working.
+    """
+
+    item = next(
+        (line for line in state.batch_items if line.bag_id == bag_id),
+        None,
+    )
+    if item is None:
+        return fallback_carousel, fallback_batch
+    batch = state.batches.get(item.batch_id)
+    carousel = batch.carousel if batch and batch.carousel else fallback_carousel
+    return carousel, item.number
+
+
+def stage_clear(session: Session, at: str) -> int:
+    """Clear the running carousel into load records, inside a session.
+
+    Each bag on the carousel is marked loaded and earns one immutable load
+    record stamped with the batch it was booked into.
+    """
+
+    state = session.state
+    pending = list(state.belt_on_carousel)
+    if not pending:
+        return 0
+    for bag_id in pending:
+        bag = state.bags.get(bag_id)
+        if bag is not None and bag.state is not BagState.LOADED:
+            updated = bag.evolved(state=BagState.LOADED)
+            state.bags[bag_id] = updated
+            session.record("bag.put", {"bag": updated.as_dict()}, at)
+        carousel, batch = _batch_for_bag(state, bag_id, state.belt_carousel, state.belt_batch)
+        record = LoadRecord(bag_id=bag_id, carousel=carousel, batch=batch, at=at)
+        state.load_records.append(record)
+        session.record("load.append", {"record": record.as_dict()}, at)
+    state.belt_on_carousel = []
+    session.record(
+        "belt.clear",
+        {"carousel": state.belt_carousel, "batch": state.belt_batch},
+        at,
+    )
+    session.record("counter.add", {"name": "belt.loaded", "delta": len(pending)}, at)
+    return len(pending)
+
+
+def stage_handoff(
+    session: Session,
+    carousel: str,
+    closed_number: int,
+    next_number: int,
+    at: str,
+) -> None:
+    """Clear the closed batch into load records at the boundary.
+
+    The belt's running batch pointer is a *global* carousel pointer and may
+    be serving several flights at once, so a per-flight ledger boundary does
+    not announce the carousel's next batch here — that stays with the
+    explicit :meth:`Belt.switch` operator. Clearing is all the boundary needs
+    to pin the closed batch's load records to this commit point.
+    """
+
+    stage_clear(session, at)
 
 
 class Belt:
@@ -69,6 +144,18 @@ class Belt:
 
     def loads(self) -> list[LoadRecord]:
         return list(self._store.state().load_records)
+
+    def stage_handoff(
+        self,
+        session: Session,
+        carousel: str,
+        closed_number: int,
+        next_number: int,
+        at: str,
+    ) -> None:
+        """Handoff protocol used by the batch ledger inside its transaction."""
+
+        stage_handoff(session, carousel, closed_number, next_number, at)
 
     def switch(self, carousel: str, batch: int) -> int:
         """Clear the current batch, then announce the next one."""
@@ -137,32 +224,8 @@ class Belt:
 
     def _clear_current(self) -> int:
         state = self._store.state()
-        pending = list(state.belt_on_carousel)
-        if not pending:
+        if not state.belt_on_carousel:
             return 0
         at = self._clock.now_iso()
         with self._store.session() as session:
-            for bag_id in pending:
-                bag = session.state.bags.get(bag_id)
-                if bag is not None and bag.state is not BagState.LOADED:
-                    updated = bag.evolved(state=BagState.LOADED)
-                    session.state.bags[bag_id] = updated
-                    session.record("bag.put", {"bag": updated.as_dict()}, at)
-                record = LoadRecord(
-                    bag_id=bag_id,
-                    carousel=state.belt_carousel,
-                    batch=state.belt_batch,
-                    at=at,
-                )
-                session.state.load_records.append(record)
-                session.record("load.append", {"record": record.as_dict()}, at)
-            session.state.belt_on_carousel = []
-            session.record(
-                "belt.clear",
-                {"carousel": state.belt_carousel, "batch": state.belt_batch},
-                at,
-            )
-            session.record(
-                "counter.add", {"name": "belt.loaded", "delta": len(pending)}, at
-            )
-        return len(pending)
+            return stage_clear(session, at)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from .enums import BagState, FlightState
+from .enums import BagState, BatchState, FlightState
 
 
 def _clean(raw: Any) -> Any:
@@ -249,6 +249,107 @@ class Sequence:
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "Sequence":
         return cls(epoch=int(raw.get("epoch", 0)), next_value=int(raw.get("next", 0)))
+
+
+@dataclass(frozen=True)
+class SortBatch:
+    """One sorting batch of a flight.
+
+    Batch numbers restart at 1 per flight; ``flight_id`` plus ``number`` is
+    the globally unique key. The countdown is a fixed ``window_seconds``
+    starting at ``opened_at`` and ending at ``planned_close_at``. A closed
+    batch carries the journal commit point (``commit_seq``) and a hash over
+    its contents and the previous closed batch, which is what makes the
+    boundary tamper evident and non-revertible.
+    """
+
+    id: str
+    flight_id: str
+    number: int
+    carousel: str
+    state: BatchState = BatchState.OPEN
+    window_seconds: int = 0
+    opened_at: str = ""
+    planned_close_at: str = ""
+    closed_at: str = ""
+    commit_seq: int = 0
+    prev_digest: str = ""
+    digest: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "flight_id": self.flight_id,
+            "number": self.number,
+            "carousel": self.carousel,
+            "state": self.state.value,
+            "window_seconds": self.window_seconds,
+            "opened_at": self.opened_at,
+            "planned_close_at": self.planned_close_at,
+            "closed_at": self.closed_at,
+            "commit_seq": self.commit_seq,
+            "prev_digest": self.prev_digest,
+            "digest": self.digest,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "SortBatch":
+        return cls(
+            id=str(raw["id"]),
+            flight_id=str(raw.get("flight_id", "")),
+            number=int(raw.get("number", 0)),
+            carousel=str(raw.get("carousel", "")),
+            state=BatchState(raw.get("state", BatchState.OPEN.value)),
+            window_seconds=int(raw.get("window_seconds", 0)),
+            opened_at=str(raw.get("opened_at", "")),
+            planned_close_at=str(raw.get("planned_close_at", "")),
+            closed_at=str(raw.get("closed_at", "")),
+            commit_seq=int(raw.get("commit_seq", 0)),
+            prev_digest=str(raw.get("prev_digest", "")),
+            digest=str(raw.get("digest", "")),
+        )
+
+    def evolved(self, **changes: Any) -> "SortBatch":
+        return replace(self, **changes)
+
+
+@dataclass(frozen=True)
+class BatchItem:
+    """One bag's immutable membership line in a sorting batch.
+
+    The line is stamped at the chute allocation instant (the sorter's
+    dispatch commit), which is the only clock membership is derived from.
+    One bag appears in at most one batch: ``bag_id`` is unique across the
+    whole ledger.
+    """
+
+    bag_id: str
+    batch_id: str
+    flight_id: str
+    number: int
+    chute_id: str
+    at: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "bag_id": self.bag_id,
+            "batch_id": self.batch_id,
+            "flight_id": self.flight_id,
+            "number": self.number,
+            "chute_id": self.chute_id,
+            "at": self.at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "BatchItem":
+        return cls(
+            bag_id=str(raw["bag_id"]),
+            batch_id=str(raw.get("batch_id", "")),
+            flight_id=str(raw.get("flight_id", "")),
+            number=int(raw.get("number", 0)),
+            chute_id=str(raw.get("chute_id", "")),
+            at=str(raw.get("at", "")),
+        )
 
 
 @dataclass(frozen=True)

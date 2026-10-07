@@ -18,6 +18,7 @@ class PlantReport:
         audit: object,
         namespace: object,
         topology: object,
+        batches: object | None = None,
     ) -> None:
         self._store = store
         self._book = book
@@ -27,6 +28,7 @@ class PlantReport:
         self._audit = audit
         self._ns = namespace
         self._topology = topology
+        self._batches = batches
 
     def summary(self) -> dict[str, object]:
         flights = self._book.list()
@@ -46,12 +48,23 @@ class PlantReport:
             "batch": self._belt.batch(),
             "watermark": self._store.watermark,
             "quota": self._quota.limits(),
+            "batches": len(self._store.state().batches),
+            "open_batches": self._open_batch_count(),
         }
+
+    def _open_batch_count(self) -> int:
+        from bagsort.model.enums import BatchState
+
+        return sum(
+            1 for batch in self._store.state().batches.values()
+            if batch.state is BatchState.OPEN
+        )
 
     def flight_rows(self) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
         for flight in self._book.list():
             assignment = self._chutes.current(flight.id)
+            current = self._current_batch(flight.id)
             rows.append(
                 {
                     "id": flight.id,
@@ -64,9 +77,17 @@ class PlantReport:
                     "chute_id": assignment.chute_id if assignment else "",
                     "chute_generation": assignment.generation if assignment else 0,
                     "bags": len(self._book.list_bags_for(flight.id)),
+                    "current_sort_batch": current.number if current else 0,
+                    "batch_closes_at": current.planned_close_at if current else "",
+                    "batch_open": current is not None,
                 }
             )
         return rows
+
+    def _current_batch(self, flight_id: str):
+        if self._batches is None:
+            return None
+        return self._batches.open_for(flight_id)
 
     def text(self) -> str:
         summary = self.summary()
@@ -79,6 +100,7 @@ class PlantReport:
             f"sort records      : {summary['sort_records']}",
             f"audit entries     : {summary['audit_entries']} intact={summary['audit_intact']}",
             f"carousel          : {summary['carousel']} batch={summary['batch']}",
+            f"sorting batches   : {summary['batches']} ({summary['open_batches']} open)",
             f"journal watermark : {summary['watermark']}",
         ]
         return "\n".join(lines) + "\n"

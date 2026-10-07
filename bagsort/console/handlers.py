@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from bagsort.checkin.entries import Entry
+from bagsort.batch import policy
 from bagsort.model.entities import Flight, Reading
 from bagsort.model.validate import validate_flight
 from bagsort.reporting import csv_export
@@ -302,6 +303,15 @@ def handle_route_detail(server, request: Request) -> Response:
     return json_response(_plant(server).sorter.route(request.param("id")).as_dict())
 
 
+def handle_bag_batch(server, request: Request) -> Response:
+    result = _plant(server).bag_batch(request.param("id"))
+    if result is None:
+        return json_response({"error": "not booked in any batch"}, status=404)
+    return json_response(
+        {"item": result["item"].as_dict(), "batch": result["batch"].as_dict()}
+    )
+
+
 def handle_sort_count(server, request: Request) -> Response:
     count = _plant(server).sorter.log.count_for(request.param("id"))
     return json_response({"bag_id": request.param("id"), "count": count})
@@ -456,8 +466,17 @@ def handle_sort_dispatch(server, request: Request) -> Response:
         epoch=bag.epoch,
         committed=request.bool_field("committed", True),
     )
-    record = plant.sorter.dispatch(bag, reading)
-    return json_response(record.as_dict(), status=201)
+    result = plant.sorter.dispatch(bag, reading)
+    payload = dict(result.record.as_dict())
+    payload.update(
+        {
+            "batch_id": result.batch_id,
+            "batch_number": result.batch_number,
+            "late": result.was_late,
+            "closed_batch_ids": list(result.closed_batch_ids),
+        }
+    )
+    return json_response(payload, status=201)
 
 
 def handle_retry(server, request: Request) -> Response:
@@ -615,6 +634,67 @@ def handle_belt_transfers(server, request: Request) -> Response:
 def handle_belt_replay(server, request: Request) -> Response:
     commands = _plant(server).belt.replay_transfers()
     return json_response([command.as_dict() for command in commands])
+
+
+# ---------------------------------------------------------------------------
+# sorting batches
+# ---------------------------------------------------------------------------
+
+
+def handle_batch_arm(server, request: Request) -> Response:
+    plant = _plant(server)
+    batch = plant.arm_batch(
+        request.required("flight_id"),
+        request.str_field("carousel"),
+        request.int_field("window_seconds", policy.DEFAULT_WINDOW_SECONDS),
+    )
+    return json_response(batch.as_dict(), status=201)
+
+
+def handle_close_batch(server, request: Request) -> Response:
+    batch = _plant(server).close_batch(request.param("batch_id"))
+    return json_response(batch.as_dict())
+
+
+def handle_tick_batches(server, request: Request) -> Response:
+    closed = _plant(server).tick_batches()
+    return json_response({"closed": [batch.as_dict() for batch in closed], "count": len(closed)})
+
+
+def handle_list_batches(server, request: Request) -> Response:
+    plant = _plant(server)
+    flight_id = request.query_str("flight_id")
+    batches = plant.batches.list_for(flight_id) if flight_id else list(
+        plant.store.state().batches.values()
+    )
+    return json_response([batch.as_dict() for batch in sorted(batches, key=lambda item: item.id)])
+
+
+def handle_get_sort_batch(server, request: Request) -> Response:
+    return json_response(_plant(server).batches.get(request.param("batch_id")).as_dict())
+
+
+def handle_batch_items(server, request: Request) -> Response:
+    plant = _plant(server)
+    batch_id = request.param("batch_id")
+    items = plant.batches.items_for(batch_id)
+    return json_response(
+        {"batch_id": batch_id, "count": len(items), "items": [item.as_dict() for item in items]}
+    )
+
+
+def handle_batch_history(server, request: Request) -> Response:
+    flight_id = request.query_str("flight_id") or None
+    items = _plant(server).batch_history(flight_id)
+    return json_response([item.as_dict() for item in items])
+
+
+def handle_batch_verify(server, request: Request) -> Response:
+    return json_response(_plant(server).verify_batches().as_dict())
+
+
+def handle_batch_policy(server, request: Request) -> Response:
+    return json_response(_plant(server).batch_policy())
 
 
 # ---------------------------------------------------------------------------

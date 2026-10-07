@@ -76,6 +76,7 @@ def route_table() -> list[Route]:
         Route("GET", "/api/bags/{id}/flight", "flight a bag is mapped to", "handle_bag_flight"),
         Route("POST", "/api/bags/{id}/remap", "move a bag to another flight", "handle_remap_bag"),
         Route("GET", "/api/bags/{id}/route", "resolved route of a bag", "handle_route_detail"),
+        Route("GET", "/api/bags/{id}/batch", "sorting batch a bag was booked into", "handle_bag_batch"),
         Route("GET", "/api/bags/{id}/sort-count", "how often a bag was sorted", "handle_sort_count"),
         Route("GET", "/api/bags/{id}/last-chute", "the chute a bag last used", "handle_last_chute"),
         # -- chutes -------------------------------------------------------
@@ -129,6 +130,16 @@ def route_table() -> list[Route]:
         Route("POST", "/api/belt/transfers", "append a transfer command", "handle_append_transfer"),
         Route("GET", "/api/belt/transfers", "list transfer commands", "handle_belt_transfers"),
         Route("GET", "/api/belt/replay", "transfer commands for this batch", "handle_belt_replay"),
+        # -- sorting batches ----------------------------------------------
+        Route("POST", "/api/batches/arm", "open (or return) the current batch", "handle_batch_arm"),
+        Route("POST", "/api/batches/tick", "close every due batch", "handle_tick_batches"),
+        Route("GET", "/api/batches/policy", "membership clock and trade-off", "handle_batch_policy"),
+        Route("GET", "/api/batches/verify", "recompute history and reconcile", "handle_batch_verify"),
+        Route("GET", "/api/batches/history", "batch membership history", "handle_batch_history"),
+        Route("GET", "/api/batches", "list sorting batches", "handle_list_batches"),
+        Route("GET", "/api/batches/{batch_id}", "read one sorting batch", "handle_get_sort_batch"),
+        Route("POST", "/api/batches/{batch_id}/close", "idempotently close a due batch", "handle_close_batch"),
+        Route("GET", "/api/batches/{batch_id}/items", "bags booked into a batch", "handle_batch_items"),
         # -- quota --------------------------------------------------------
         Route("POST", "/api/quota", "set a flight allowance", "handle_set_quota"),
         Route("GET", "/api/quota", "list every allowance", "handle_quota_status"),
