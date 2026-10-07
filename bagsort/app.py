@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from bagsort.audit.chain import AuditChain
+from bagsort.batch.controller import BatchController, Placement
+from bagsort.batch.history import BatchView
 from bagsort.belt.belt import Belt
 from bagsort.checkin.desk import Desk
 from bagsort.clock import Clock
@@ -21,7 +23,7 @@ from bagsort.flight.mapping import BagMapping
 from bagsort.flight.schedule import ScheduleBoard
 from bagsort.ids import IdFactory
 from bagsort.inject.injector import Injector
-from bagsort.model.entities import Bag, Flight, Reading, SortRecord
+from bagsort.model.entities import Bag, BatchBoundary, BatchRun, Flight, Reading, SortRecord
 from bagsort.model.errors import unknown_bag
 from bagsort.ns.chutes import ChuteRegistry
 from bagsort.ns.namespace import Namespace
@@ -66,6 +68,7 @@ class Plant:
     desk: Desk
     recheck: RecheckQueue
     belt: Belt
+    batches: BatchController
     quota: QuotaBook
     audit: AuditChain
     report: PlantReport
@@ -105,6 +108,7 @@ class Plant:
         closer = FlightCloser(book)
         recheck = RecheckQueue(store, book, clock)
         belt = Belt(store, clock, IdFactory("cmd"))
+        batches = BatchController(store, clock, belt)
 
         audit = AuditChain(store, clock, handling_line())
         audit_subscriber = _AuditSubscriber(audit)
@@ -117,6 +121,7 @@ class Plant:
             "chute.assigned",
             "belt.switched",
             "bag.remapped",
+            "batch.closed",
         ):
             bus.subscribe(topic, audit_subscriber)
 
@@ -144,6 +149,7 @@ class Plant:
             desk=desk,
             recheck=recheck,
             belt=belt,
+            batches=batches,
             quota=quota,
             audit=audit,
             report=report,
@@ -234,6 +240,55 @@ class Plant:
         self.bus.publish("belt.switched", carousel=carousel, batch=batch)
         return cleared
 
+    # -- batch lines: the line closes itself --------------------------------
+
+    def open_batch_line(self, carousel: str, window_seconds: int, start_batch: int = 1) -> BatchRun:
+        return self.batches.open_line(carousel, window_seconds, start_batch)
+
+    def retire_batch_line(self, carousel: str) -> BatchBoundary:
+        boundary = self.batches.retire(carousel)
+        self._publish_batch_closed(boundary)
+        return boundary
+
+    def batch_status(self) -> list[dict[str, object]]:
+        return self.batches.status()
+
+    def tick_batches(self) -> list[BatchBoundary]:
+        closed = self.batches.tick()
+        for boundary in closed:
+            self._publish_batch_closed(boundary)
+        return closed
+
+    def close_batch(self, carousel: str, batch: int) -> tuple[BatchBoundary, bool]:
+        boundary, created = self.batches.close(carousel, batch)
+        if created:
+            self._publish_batch_closed(boundary)
+        return boundary, created
+
+    def place_on_carousel(self, bag_id: str) -> Placement:
+        placement = self.batches.place(self.bag(bag_id))
+        for boundary in placement.closed:
+            self._publish_batch_closed(boundary)
+        return placement
+
+    def batch_boundaries(self) -> list[BatchBoundary]:
+        return self.batches.boundaries()
+
+    def batch_history(self, until_at: str) -> BatchView:
+        return self.batches.recompute(until_at)
+
+    def verify_batches(self) -> list[str]:
+        return self.batches.verify()
+
+    def _publish_batch_closed(self, boundary: BatchBoundary) -> None:
+        self.bus.publish(
+            "batch.closed",
+            carousel=boundary.carousel,
+            batch=boundary.batch,
+            reason=boundary.reason,
+            loads=boundary.load_count,
+        )
+
     def rotate_belt(self) -> int:
         return self.belt.rotate()
 
@@ -259,6 +314,7 @@ class _AuditSubscriber:
         "chute.assigned": ("chute_assign", "chute"),
         "belt.switched": ("belt_switch", "belt"),
         "bag.remapped": ("remap", "checkin"),
+        "batch.closed": ("batch_close", "belt"),
     }
 
     def __init__(self, audit: AuditChain) -> None:

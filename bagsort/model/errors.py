@@ -19,3 +19,7 @@ def unknown_flight(flight_id: str) -> NotFoundError:
 
 def unknown_bag(bag_id: str) -> NotFoundError:
     return NotFoundError(f"bag {bag_id!r} is not registered")
+
+
+def unknown_batch_line(carousel: str) -> NotFoundError:
+    return NotFoundError(f"carousel {carousel!r} has no open batch line")

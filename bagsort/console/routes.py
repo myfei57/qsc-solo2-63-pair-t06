@@ -129,6 +129,16 @@ def route_table() -> list[Route]:
         Route("POST", "/api/belt/transfers", "append a transfer command", "handle_append_transfer"),
         Route("GET", "/api/belt/transfers", "list transfer commands", "handle_belt_transfers"),
         Route("GET", "/api/belt/replay", "transfer commands for this batch", "handle_belt_replay"),
+        # -- batches ------------------------------------------------------
+        Route("GET", "/api/batches", "open batch lines and their countdowns", "handle_batch_status"),
+        Route("POST", "/api/batches/open", "open a countdown-driven batch line", "handle_open_batch_line"),
+        Route("POST", "/api/batches/retire", "close and take down a batch line", "handle_retire_batch_line"),
+        Route("POST", "/api/batches/tick", "settle batches whose countdown expired", "handle_tick_batches"),
+        Route("POST", "/api/batches/close", "close one batch idempotently", "handle_close_batch"),
+        Route("POST", "/api/batches/place", "place a bag through the batch gate", "handle_batch_place"),
+        Route("GET", "/api/batches/boundaries", "committed batch boundaries", "handle_batch_boundaries"),
+        Route("GET", "/api/batches/history", "batch world recomputed as of a time", "handle_batch_history"),
+        Route("GET", "/api/batches/verify", "check boundaries against loads and carousel", "handle_batch_verify"),
         # -- quota --------------------------------------------------------
         Route("POST", "/api/quota", "set a flight allowance", "handle_set_quota"),
         Route("GET", "/api/quota", "list every allowance", "handle_quota_status"),

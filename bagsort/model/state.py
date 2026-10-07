@@ -13,6 +13,8 @@ from typing import Any
 from .entities import (
     AuditEntry,
     Bag,
+    BatchBoundary,
+    BatchRun,
     ChuteAssignment,
     Flight,
     LoadRecord,
@@ -42,6 +44,8 @@ class State:
     belt_carousel: str = ""
     belt_batch: int = 0
     belt_on_carousel: list[str] = field(default_factory=list)
+    batch_lines: dict[str, BatchRun] = field(default_factory=dict)
+    batch_boundaries: list[BatchBoundary] = field(default_factory=list)
 
     def copy(self) -> "State":
         return State(
@@ -60,6 +64,8 @@ class State:
             belt_carousel=self.belt_carousel,
             belt_batch=self.belt_batch,
             belt_on_carousel=list(self.belt_on_carousel),
+            batch_lines=dict(self.batch_lines),
+            batch_boundaries=list(self.batch_boundaries),
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -83,6 +89,10 @@ class State:
                 "batch": self.belt_batch,
                 "on_carousel": list(self.belt_on_carousel),
             },
+            "batch_lines": {
+                key: value.as_dict() for key, value in sorted(self.batch_lines.items())
+            },
+            "batch_boundaries": [boundary.as_dict() for boundary in self.batch_boundaries],
         }
 
 def apply_entry(state: State, kind: str, payload: dict[str, Any]) -> None:
@@ -153,6 +163,22 @@ def apply_entry(state: State, kind: str, payload: dict[str, Any]) -> None:
         state.belt_on_carousel = []
         state.belt_carousel = str(payload.get("carousel", state.belt_carousel))
         state.belt_batch = int(payload.get("batch", state.belt_batch))
+    elif kind == "batch.open":
+        run = BatchRun.from_dict(payload)
+        state.batch_lines[run.carousel] = run
+    elif kind == "batch.close":
+        boundary = BatchBoundary.from_dict(payload["boundary"])
+        duplicate = any(
+            existing.carousel == boundary.carousel and existing.batch == boundary.batch
+            for existing in state.batch_boundaries
+        )
+        if duplicate:
+            raise ValidationError(
+                f"batch boundary {boundary.carousel}#{boundary.batch} is already committed"
+            )
+        state.batch_boundaries.append(boundary)
+    elif kind == "batch.retire":
+        state.batch_lines.pop(str(payload["carousel"]), None)
     else:  # pragma: no cover - guards against a typo in a new command kind
         raise ValidationError(f"unknown journal command {kind!r}")
 

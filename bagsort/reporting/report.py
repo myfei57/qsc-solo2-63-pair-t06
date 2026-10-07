@@ -44,6 +44,8 @@ class PlantReport:
             "audit_intact": self._audit.verify(),
             "carousel": self._belt.carousel(),
             "batch": self._belt.batch(),
+            "batch_lines": len(self._store.state().batch_lines),
+            "batch_boundaries": len(self._store.state().batch_boundaries),
             "watermark": self._store.watermark,
             "quota": self._quota.limits(),
         }
@@ -79,6 +81,7 @@ class PlantReport:
             f"sort records      : {summary['sort_records']}",
             f"audit entries     : {summary['audit_entries']} intact={summary['audit_intact']}",
             f"carousel          : {summary['carousel']} batch={summary['batch']}",
+            f"batch lines       : {summary['batch_lines']} open, {summary['batch_boundaries']} committed",
             f"journal watermark : {summary['watermark']}",
         ]
         return "\n".join(lines) + "\n"

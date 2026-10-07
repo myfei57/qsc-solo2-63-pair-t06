@@ -618,6 +618,61 @@ def handle_belt_replay(server, request: Request) -> Response:
 
 
 # ---------------------------------------------------------------------------
+# batch lines
+# ---------------------------------------------------------------------------
+
+
+def handle_batch_status(server, request: Request) -> Response:
+    return json_response({"lines": _plant(server).batch_status()})
+
+
+def handle_open_batch_line(server, request: Request) -> Response:
+    run = _plant(server).open_batch_line(
+        request.required("carousel"),
+        request.int_field("window_seconds"),
+        request.int_field("start_batch", 1),
+    )
+    return json_response(run.as_dict(), status=201)
+
+
+def handle_retire_batch_line(server, request: Request) -> Response:
+    boundary = _plant(server).retire_batch_line(request.required("carousel"))
+    return json_response(boundary.as_dict())
+
+
+def handle_tick_batches(server, request: Request) -> Response:
+    closed = _plant(server).tick_batches()
+    return json_response({"closed": [boundary.as_dict() for boundary in closed]})
+
+
+def handle_close_batch(server, request: Request) -> Response:
+    boundary, created = _plant(server).close_batch(
+        request.required("carousel"), request.int_field("batch")
+    )
+    return json_response({"boundary": boundary.as_dict(), "created": created})
+
+
+def handle_batch_place(server, request: Request) -> Response:
+    placement = _plant(server).place_on_carousel(request.required("bag_id"))
+    return json_response(placement.as_dict(), status=201)
+
+
+def handle_batch_boundaries(server, request: Request) -> Response:
+    committed = _plant(server).batch_boundaries()
+    return json_response([boundary.as_dict() for boundary in committed])
+
+
+def handle_batch_history(server, request: Request) -> Response:
+    view = _plant(server).batch_history(request.query_str("until"))
+    return json_response(view.as_dict())
+
+
+def handle_batch_verify(server, request: Request) -> Response:
+    problems = _plant(server).verify_batches()
+    return json_response({"ok": not problems, "problems": problems})
+
+
+# ---------------------------------------------------------------------------
 # quota
 # ---------------------------------------------------------------------------
 

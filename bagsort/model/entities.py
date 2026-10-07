@@ -239,6 +239,87 @@ class LoadRecord:
 
 
 @dataclass(frozen=True)
+class BatchRun:
+    """The batch currently open on a carousel and its countdown window."""
+
+    carousel: str
+    batch: int
+    opened_at: str
+    closes_at: str
+    window_seconds: int
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "carousel": self.carousel,
+            "batch": self.batch,
+            "opened_at": self.opened_at,
+            "closes_at": self.closes_at,
+            "window_seconds": self.window_seconds,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "BatchRun":
+        return cls(
+            carousel=str(raw["carousel"]),
+            batch=int(raw.get("batch", 0)),
+            opened_at=str(raw.get("opened_at", "")),
+            closes_at=str(raw.get("closes_at", "")),
+            window_seconds=int(raw.get("window_seconds", 0)),
+        )
+
+    def evolved(self, **changes: Any) -> "BatchRun":
+        return replace(self, **changes)
+
+
+@dataclass(frozen=True)
+class BatchBoundary:
+    """The irreversible commit point a closed batch leaves in the journal."""
+
+    carousel: str
+    batch: int
+    opened_at: str
+    closes_at: str
+    closed_at: str
+    reason: str
+    members: tuple[str, ...] = ()
+    load_count: int = 0
+    prev_digest: str = ""
+    digest: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "carousel": self.carousel,
+            "batch": self.batch,
+            "opened_at": self.opened_at,
+            "closes_at": self.closes_at,
+            "closed_at": self.closed_at,
+            "reason": self.reason,
+            "members": list(self.members),
+            "load_count": self.load_count,
+            "prev_digest": self.prev_digest,
+            "digest": self.digest,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> "BatchBoundary":
+        return cls(
+            carousel=str(raw["carousel"]),
+            batch=int(raw.get("batch", 0)),
+            opened_at=str(raw.get("opened_at", "")),
+            closes_at=str(raw.get("closes_at", "")),
+            closed_at=str(raw.get("closed_at", "")),
+            reason=str(raw.get("reason", "")),
+            members=tuple(str(item) for item in raw.get("members", [])),
+            load_count=int(raw.get("load_count", 0)),
+            prev_digest=str(raw.get("prev_digest", "")),
+            digest=str(raw.get("digest", "")),
+        )
+
+    def evolved(self, **changes: Any) -> "BatchBoundary":
+        return replace(self, **changes)
+
+
+@dataclass(frozen=True)
 class Sequence:
     epoch: int = 0
     next_value: int = 0

@@ -32,6 +32,7 @@ def run_demo(plant: "Plant", cycles: int = 6) -> dict[str, object]:
     plant.clock.advance(5)
 
     checked_in = [plant.check_in(f"BAG{i:04d}", flight.id) for i in range(cycles)]
+    late_comer = plant.check_in("LATE0001", flight.id)
     plant.clock.advance(30)
     sorted_bags = [plant.push_bag(bag.id, chute) for bag in checked_in]
     plant.clock.advance(120)
@@ -54,6 +55,14 @@ def run_demo(plant: "Plant", cycles: int = 6) -> dict[str, object]:
     closed = plant.close_flight(flight.id)
     loads = len(plant.belt.loads())
 
+    batch_carousel = plant.namespace.carousel_id("CR2")
+    plant.open_batch_line(batch_carousel, window_seconds=90)
+    gated = [plant.place_on_carousel(bag.id) for bag in checked_in[:2]]
+    plant.clock.advance(200)
+    auto_closed = plant.tick_batches()
+    late = plant.place_on_carousel(late_comer.id)
+    batch_problems = plant.verify_batches()
+
     summary: dict[str, object] = {
         "terminal": plant.namespace.terminal,
         "line": plant.topology.describe(),
@@ -69,6 +78,11 @@ def run_demo(plant: "Plant", cycles: int = 6) -> dict[str, object]:
         "replayed_transfers": replayed,
         "load_records": loads,
         "flight_state": closed.state.value,
+        "gated_placements": len(gated),
+        "auto_closed_batches": len(auto_closed),
+        "late_placement_batch": late.batch,
+        "committed_boundaries": len(plant.batch_boundaries()),
+        "batch_problems": len(batch_problems),
         "audit_entries": plant.audit.count(),
         "audit_intact": plant.audit.verify(),
         "watermark": plant.store.watermark,
@@ -88,5 +102,8 @@ def invariants_hold(summary: dict[str, object]) -> bool:
         and summary["carousel_cleared"] >= 1
         and summary["load_records"] >= 1
         and summary["flight_state"] == "closed"
+        and summary["auto_closed_batches"] >= 1
+        and summary["late_placement_batch"] >= 2
+        and summary["batch_problems"] == 0
         and int(summary["watermark"]) > 0
     )

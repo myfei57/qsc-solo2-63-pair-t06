@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 DEFAULT_EPOCH = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 
 class Clock:
@@ -23,7 +24,17 @@ class Clock:
         return self._start + timedelta(seconds=self._offset)
 
     def now_iso(self) -> str:
-        return self.now().strftime("%Y-%m-%dT%H:%M:%SZ")
+        return self.iso(self.now())
+
+    def iso(self, moment: datetime) -> str:
+        """Render ``moment`` in the canonical UTC form every timestamp uses."""
+
+        return moment.astimezone(timezone.utc).strftime(ISO_FORMAT)
+
+    def parse(self, text: str) -> datetime:
+        """Read a timestamp produced by :meth:`iso` back into a UTC instant."""
+
+        return datetime.strptime(text, ISO_FORMAT).replace(tzinfo=timezone.utc)
 
     def advance(self, seconds: float) -> datetime:
         """Move the clock forward and return the new instant."""
